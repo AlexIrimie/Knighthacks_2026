@@ -1,0 +1,667 @@
+"""
+Valorant Live Detection + Transparent Overlay POC
+--------------------------------------------------
+Live DXCam capture -> purple outline detection -> transparent desktop overlay.
+
+This script:
+- DOES NOT move the mouse
+- DOES NOT inject input
+- DOES NOT hook into Valorant
+- simply draws a normal transparent always-on-top Windows overlay
+
+Recommended:
+- Run Valorant in Borderless / Windowed Fullscreen.
+- Exclusive fullscreen may cover normal desktop overlays.
+
+Install:
+    pip install dxcam opencv-python numpy PyQt6
+
+Stop:
+    Alt-tab to the terminal and press Ctrl+C.
+
+Outputs:
+    valorant_overlay_metrics.csv
+"""
+
+import csv
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+
+import cv2
+import dxcam
+import numpy as np
+from PyQt6.QtCore import Qt, QTimer, QRectF
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtWidgets import QApplication, QWidget
+
+
+# ============================================================
+# QUICK SETTINGS
+# ============================================================
+
+TARGET_CAPTURE_FPS = 120
+OUTPUT_IDX = 0
+CAPTURE_REGION = None
+
+OUTPUT_CSV = "valorant_overlay_metrics.csv"
+
+# Starting HSV range for Valorant PURPLE outline.
+# Tune if needed.
+LOWER_PURPLE = np.array([125, 90, 110])
+UPPER_PURPLE = np.array([165, 255, 255])
+
+MIN_CONTOUR_AREA = 20
+MIN_BOX_WIDTH = 4
+MIN_BOX_HEIGHT = 10
+SEARCH_REGION_FRACTION = 0.90
+
+# Rough head estimate: 15% down from top of detected box.
+HEAD_Y_FRACTION = 0.15
+
+# How often the overlay repaints.
+OVERLAY_REFRESH_MS = 8
+
+# Overlay visuals.
+DRAW_BOX = True
+DRAW_HEAD_POINT = True
+DRAW_CENTER_CROSS = True
+DRAW_LINE_TO_TARGET = True
+DRAW_STATS = True
+
+
+# ============================================================
+# SHARED STATE
+# ============================================================
+
+state_lock = threading.Lock()
+
+shared_state = {
+    "running": True,
+    "screen_width": 0,
+    "screen_height": 0,
+    "best_box": None,
+    "target_x": None,
+    "target_y": None,
+    "dx": None,
+    "dy": None,
+    "candidate_count": 0,
+    "vision_ms": 0.0,
+    "loop_fps": 0.0,
+    "frame_number": 0,
+}
+
+
+# ============================================================
+# DETECTION
+# ============================================================
+
+def get_search_region(frame):
+    h, w = frame.shape[:2]
+
+    roi_w = int(w * SEARCH_REGION_FRACTION)
+    roi_h = int(h * SEARCH_REGION_FRACTION)
+
+    x1 = (w - roi_w) // 2
+    y1 = (h - roi_h) // 2
+    x2 = x1 + roi_w
+    y2 = y1 + roi_h
+
+    return frame[y1:y2, x1:x2], x1, y1
+
+
+def detect_purple_enemy(frame):
+    """
+    Returns:
+        best_box: (x, y, w, h) or None
+        candidates: list sorted best -> worst
+    """
+    full_h, full_w = frame.shape[:2]
+
+    roi, off_x, off_y = get_search_region(frame)
+
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, LOWER_PURPLE, UPPER_PURPLE)
+
+    # Remove tiny specks.
+    open_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (3, 3)
+    )
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_OPEN,
+        open_kernel
+    )
+
+    # Connect fragmented purple outline pieces.
+    close_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (9, 15)
+    )
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_CLOSE,
+        close_kernel,
+        iterations=2
+    )
+
+    # Slight dilation.
+    dilate_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (5, 7)
+    )
+    mask = cv2.dilate(
+        mask,
+        dilate_kernel,
+        iterations=1
+    )
+
+    contours, _ = cv2.findContours(
+        mask,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    candidates = []
+
+    frame_center_x = full_w / 2
+    frame_center_y = full_h / 2
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+
+        if area < MIN_CONTOUR_AREA:
+            continue
+
+        x, y, w, h = cv2.boundingRect(contour)
+
+        if w < MIN_BOX_WIDTH or h < MIN_BOX_HEIGHT:
+            continue
+
+        x += off_x
+        y += off_y
+
+        aspect = h / max(w, 1)
+
+        if aspect < 0.7 or aspect > 8.0:
+            continue
+
+        cx = x + w / 2
+        cy = y + h / 2
+
+        distance_from_center = np.hypot(
+            cx - frame_center_x,
+            cy - frame_center_y
+        )
+
+        size_score = area + (w * h * 0.15)
+        center_bonus = max(0, 700 - distance_from_center)
+        score = size_score + center_bonus
+
+        candidates.append({
+            "box": (x, y, w, h),
+            "score": score,
+            "area": area
+        })
+
+    candidates.sort(
+        key=lambda c: c["score"],
+        reverse=True
+    )
+
+    best_box = candidates[0]["box"] if candidates else None
+
+    return best_box, candidates
+
+
+# ============================================================
+# CAPTURE / VISION THREAD
+# ============================================================
+
+def vision_worker():
+    camera = None
+    csv_file = None
+
+    try:
+        camera = dxcam.create(
+            output_idx=OUTPUT_IDX,
+            output_color="BGR"
+        )
+
+        camera.start(
+            region=CAPTURE_REGION,
+            target_fps=TARGET_CAPTURE_FPS,
+            video_mode=True
+        )
+
+        first_frame = None
+
+        while first_frame is None:
+            with state_lock:
+                if not shared_state["running"]:
+                    return
+
+            first_frame = camera.get_latest_frame()
+
+            if first_frame is None:
+                time.sleep(0.001)
+
+        height, width = first_frame.shape[:2]
+
+        with state_lock:
+            shared_state["screen_width"] = width
+            shared_state["screen_height"] = height
+
+        csv_file = open(
+            OUTPUT_CSV,
+            "w",
+            newline="",
+            encoding="utf-8"
+        )
+
+        writer = csv.writer(csv_file)
+
+        writer.writerow([
+            "frame",
+            "time_seconds",
+            "detected",
+            "candidate_count",
+            "box_x",
+            "box_y",
+            "box_width",
+            "box_height",
+            "target_x",
+            "target_y",
+            "dx_from_center",
+            "dy_from_center",
+            "vision_processing_ms",
+            "loop_fps"
+        ])
+
+        start_time = time.perf_counter()
+        last_loop_time = start_time
+        last_flush = start_time
+        frame_number = 0
+
+        while True:
+            with state_lock:
+                if not shared_state["running"]:
+                    break
+
+            frame = camera.get_latest_frame()
+
+            if frame is None:
+                continue
+
+            frame_number += 1
+
+            vision_start = time.perf_counter()
+            best_box, candidates = detect_purple_enemy(frame)
+            vision_end = time.perf_counter()
+
+            vision_ms = (vision_end - vision_start) * 1000.0
+
+            now = time.perf_counter()
+            loop_delta = now - last_loop_time
+            loop_fps = 1.0 / loop_delta if loop_delta > 0 else 0.0
+            last_loop_time = now
+
+            center_x = width // 2
+            center_y = height // 2
+
+            target_x = None
+            target_y = None
+            dx = None
+            dy = None
+
+            if best_box is not None:
+                x, y, w, h = best_box
+
+                target_x = int(x + w * 0.5)
+                target_y = int(y + h * HEAD_Y_FRACTION)
+
+                dx = target_x - center_x
+                dy = target_y - center_y
+
+                writer.writerow([
+                    frame_number,
+                    f"{now - start_time:.6f}",
+                    1,
+                    len(candidates),
+                    x,
+                    y,
+                    w,
+                    h,
+                    target_x,
+                    target_y,
+                    dx,
+                    dy,
+                    f"{vision_ms:.4f}",
+                    f"{loop_fps:.3f}"
+                ])
+
+            else:
+                writer.writerow([
+                    frame_number,
+                    f"{now - start_time:.6f}",
+                    0,
+                    len(candidates),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    f"{vision_ms:.4f}",
+                    f"{loop_fps:.3f}"
+                ])
+
+            with state_lock:
+                shared_state["best_box"] = best_box
+                shared_state["target_x"] = target_x
+                shared_state["target_y"] = target_y
+                shared_state["dx"] = dx
+                shared_state["dy"] = dy
+                shared_state["candidate_count"] = len(candidates)
+                shared_state["vision_ms"] = vision_ms
+                shared_state["loop_fps"] = loop_fps
+                shared_state["frame_number"] = frame_number
+
+            if now - last_flush >= 1.0:
+                csv_file.flush()
+                last_flush = now
+
+    except Exception as exc:
+        print(f"\nVision thread error: {exc}")
+
+        with state_lock:
+            shared_state["running"] = False
+
+    finally:
+        if camera is not None:
+            try:
+                camera.stop()
+            except Exception:
+                pass
+
+        if csv_file is not None:
+            csv_file.close()
+
+
+# ============================================================
+# TRANSPARENT OVERLAY
+# ============================================================
+
+class DetectionOverlay(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("Valorant Detection Overlay")
+
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowTransparentForInput
+        )
+
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground,
+            True
+        )
+
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True
+        )
+
+        # Cover the primary monitor.
+        screen = QApplication.primaryScreen()
+        geometry = screen.geometry()
+        self.setGeometry(geometry)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh_overlay)
+        self.timer.start(OVERLAY_REFRESH_MS)
+
+        self.show()
+
+    def refresh_overlay(self):
+        with state_lock:
+            running = shared_state["running"]
+
+        if not running:
+            QApplication.quit()
+            return
+
+        self.update()
+
+    def paintEvent(self, event):
+        with state_lock:
+            data = dict(shared_state)
+
+        screen_w = data["screen_width"]
+        screen_h = data["screen_height"]
+
+        if screen_w <= 0 or screen_h <= 0:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Scale captured physical pixels to overlay window pixels.
+        sx = self.width() / screen_w
+        sy = self.height() / screen_h
+
+        best_box = data["best_box"]
+        target_x = data["target_x"]
+        target_y = data["target_y"]
+
+        center_x = screen_w // 2
+        center_y = screen_h // 2
+
+        overlay_cx = center_x * sx
+        overlay_cy = center_y * sy
+
+        # ----------------------------------------------------
+        # Center marker
+        # ----------------------------------------------------
+        if DRAW_CENTER_CROSS:
+            painter.setPen(
+                QPen(
+                    QColor(0, 170, 255, 210),
+                    2
+                )
+            )
+
+            size = 10
+
+            painter.drawLine(
+                int(overlay_cx - size),
+                int(overlay_cy),
+                int(overlay_cx + size),
+                int(overlay_cy)
+            )
+
+            painter.drawLine(
+                int(overlay_cx),
+                int(overlay_cy - size),
+                int(overlay_cx),
+                int(overlay_cy + size)
+            )
+
+        # ----------------------------------------------------
+        # Target
+        # ----------------------------------------------------
+        if best_box is not None:
+            x, y, w, h = best_box
+
+            ox = x * sx
+            oy = y * sy
+            ow = w * sx
+            oh = h * sy
+
+            if DRAW_BOX:
+                painter.setPen(
+                    QPen(
+                        QColor(255, 40, 40, 230),
+                        3
+                    )
+                )
+
+                painter.drawRect(
+                    QRectF(
+                        ox,
+                        oy,
+                        ow,
+                        oh
+                    )
+                )
+
+            if target_x is not None and target_y is not None:
+                otx = target_x * sx
+                oty = target_y * sy
+
+                if DRAW_LINE_TO_TARGET:
+                    painter.setPen(
+                        QPen(
+                            QColor(255, 255, 255, 150),
+                            2
+                        )
+                    )
+
+                    painter.drawLine(
+                        int(overlay_cx),
+                        int(overlay_cy),
+                        int(otx),
+                        int(oty)
+                    )
+
+                if DRAW_HEAD_POINT:
+                    painter.setPen(
+                        QPen(
+                            QColor(0, 255, 80, 240),
+                            3
+                        )
+                    )
+
+                    radius = 7
+
+                    painter.drawEllipse(
+                        QRectF(
+                            otx - radius,
+                            oty - radius,
+                            radius * 2,
+                            radius * 2
+                        )
+                    )
+
+        # ----------------------------------------------------
+        # Stats
+        # ----------------------------------------------------
+        if DRAW_STATS:
+            painter.setFont(QFont("Consolas", 12))
+
+            painter.setPen(
+                QPen(
+                    QColor(255, 255, 255, 230),
+                    1
+                )
+            )
+
+            if data["best_box"] is not None:
+                target_text = (
+                    f"TARGET  dx={data['dx']:+d}  dy={data['dy']:+d}"
+                )
+            else:
+                target_text = "NO TARGET"
+
+            stats = (
+                f"{target_text}   "
+                f"CV {data['vision_ms']:.2f} ms   "
+                f"{data['loop_fps']:.1f} FPS   "
+                f"Candidates {data['candidate_count']}"
+            )
+
+            painter.drawText(
+                20,
+                30,
+                stats
+            )
+
+        painter.end()
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    print()
+    print("==============================================")
+    print(" Valorant Live Transparent Overlay POC")
+    print("==============================================")
+    print()
+    print("This uses a normal transparent desktop window.")
+    print("No mouse control. No game hooking.")
+    print()
+    print("Recommended:")
+    print("  Valorant -> Borderless / Windowed Fullscreen")
+    print()
+    print("Stop:")
+    print("  Alt-tab to this terminal and press Ctrl+C")
+    print()
+    print(f"Metrics CSV: {Path(OUTPUT_CSV).resolve()}")
+    print()
+
+    # QApplication first. Qt already handles Windows DPI awareness,
+    # so we deliberately do not call SetProcessDPIAware ourselves.
+    app = QApplication(sys.argv)
+
+    # Clean Ctrl+C handling so Qt doesn't dump a KeyboardInterrupt
+    # traceback from whichever event happened to be running.
+    def request_shutdown(signum=None, frame=None):
+        with state_lock:
+            shared_state["running"] = False
+
+        print("\nStopping...")
+        QTimer.singleShot(0, app.quit)
+
+    signal.signal(signal.SIGINT, request_shutdown)
+
+    # This tiny timer lets Python regularly regain control so SIGINT
+    # is handled reliably while Qt's event loop is running.
+    signal_timer = QTimer()
+    signal_timer.timeout.connect(lambda: None)
+    signal_timer.start(100)
+
+    worker = threading.Thread(
+        target=vision_worker,
+        daemon=True
+    )
+    worker.start()
+
+    overlay = DetectionOverlay()
+
+    result = app.exec()
+
+    with state_lock:
+        shared_state["running"] = False
+
+    worker.join(timeout=2.0)
+
+    print()
+    print("Stopped cleanly.")
+    print(f"Saved metrics to: {Path(OUTPUT_CSV).resolve()}")
+    print()
+
+    return result
+
+
+if __name__ == "__main__":
+    sys.exit(main())

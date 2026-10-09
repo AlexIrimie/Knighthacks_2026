@@ -11,6 +11,9 @@ dist/
 build/
 __pycache__/
 *.py[cod]
+captures/
+runs/
+valorant_overlay_metrics.csv
 .venv/
 venv/
 
