@@ -55,6 +55,10 @@ class PlayerDetector:
         self.pending = None
         self.pending_since = 0.0
         self.weak_since = None
+        self.last_raw_center = None
+        self.last_raw_time = None
+        self.motion_steps = []
+        self.motion_velocity = None
         self.shape = None
 
     def _region(self, width, height, now):
@@ -160,9 +164,13 @@ class PlayerDetector:
     def _select(self, candidates, now, width, height):
         if self.last_update is not None and now - self.last_update > self.config.lost_seconds:
             self.track = self.smooth_box = self.pending = None
+            self.motion_steps = []
+            self.motion_velocity = None
+            self.last_raw_center = None
         valid = [c for c in candidates if c["reason"] == "accepted"]
         selected = None
         weak_match = False
+        fragment_match = False
         if self.track is not None:
             matches = []
             for candidate in candidates:
@@ -179,20 +187,34 @@ class PlayerDetector:
                         and 0.8 <= height_ratio <= 1.25
                         and distance < max(64, self.track[3] * 0.85)
                         and (self.weak_since is None or now - self.weak_since <= 0.05))
+                fragment = (candidate["reason"] in
+                            ("accepted", "fragment", "no shoulder shape", "low confidence", "shape")
+                            and candidate["confidence"] >= 0.45
+                            and 0.12 <= size_ratio < 0.50
+                            and abs(box[0] + box[2] / 2 - self.track[0] - self.track[2] / 2)
+                            < max(24, self.track[2] * 0.65)
+                            and abs(box[1] + box[3] / 2 - self.track[1] - self.track[3] / 2)
+                            < max(20, self.track[3] * 0.45)
+                            and (self.weak_since is None or now - self.weak_since <= 0.05))
                 if ((strong and 0.50 <= size_ratio <= 1.9 and
                      0.65 <= height_ratio <= 1.5 and
-                     distance < max(192, self.track[3] * 1.3)) or weak):
+                     distance < max(192, self.track[3] * 1.3)) or weak or fragment):
                     matches.append((overlap(box, self.track) - distance / max(1, self.track[3])
-                                    + candidate["confidence"] * 0.25 + (0.5 if strong else 0),
-                                    candidate, weak))
+                                    + candidate["confidence"] * 0.25
+                                    + (0.5 if strong and not fragment else 0)
+                                    - (0.2 if fragment else 0), candidate, weak, fragment))
             if matches:
-                _, selected, weak_match = max(matches, key=lambda item: item[0])
+                _, selected, weak_match, fragment_match = max(matches, key=lambda item: item[0])
             elif now - self.last_seen <= self.config.lost_seconds:
                 # Keep identity briefly, but publish no stale box or target point.
                 self.last_update = now
+                self.motion_steps = []
+                self.motion_velocity = self.last_raw_center = None
                 return None, "temporarily lost"
             else:
                 self.track = self.smooth_box = self.weak_since = None
+                self.motion_steps = []
+                self.motion_velocity = self.last_raw_center = None
                 self.pending = None
 
         if selected is None and valid:
@@ -212,9 +234,17 @@ class PlayerDetector:
             self.last_update = now
             return None, "confirming" if self.pending is not None else "no target"
 
-        box = np.array(selected["box"], dtype=float)
+        raw_box = selected["box"]
+        box = np.array(raw_box, dtype=float)
+        if fragment_match:
+            previous = np.array(self.track, dtype=float)
+            dx = box[0] + box[2] / 2 - previous[0] - previous[2] / 2
+            dx = np.clip(dx, -max(12, previous[2] * 0.5), max(12, previous[2] * 0.5))
+            # A surviving fragment may be the torso or arm, so its vertical
+            # midpoint is not a reliable replacement for the player's center.
+            box = previous + (dx, 0, 0, 0)
         dt = now - self.last_seen
-        if self.smooth_box is None or dt > self.config.lost_seconds:
+        if fragment_match or self.smooth_box is None or dt > self.config.lost_seconds:
             self.smooth_box = box
         else:
             # Large, credible motion responds immediately; small jitter is filtered.
@@ -222,16 +252,41 @@ class PlayerDetector:
             tau = self.config.smooth_seconds
             alpha = 1.0 if motion > max(8, box[3] * 0.12) else 1 - math.exp(-max(dt, 0) / max(tau, 1e-6))
             self.smooth_box += alpha * (box - self.smooth_box)
-        self.track = selected["box"]
+        self.track = tuple(int(round(v)) for v in box) if fragment_match else raw_box
         self.last_seen = self.last_update = now
-        if weak_match:
+        if weak_match or fragment_match:
             self.weak_since = now if self.weak_since is None else self.weak_since
         else:
             self.weak_since = None
+        if weak_match or fragment_match:
+            self.motion_steps = []
+            self.motion_velocity = None
+            self.last_raw_center = None
+        else:
+            center = (raw_box[0] + raw_box[2] / 2, raw_box[1] + raw_box[3] / 2)
+            if self.last_raw_center is not None and self.last_raw_time is not None:
+                elapsed = now - self.last_raw_time
+                if 0 < elapsed <= 0.05:
+                    step = ((center[0] - self.last_raw_center[0]) / elapsed,
+                            (center[1] - self.last_raw_center[1]) / elapsed)
+                    self.motion_steps = (self.motion_steps + [step])[-2:]
+                else:
+                    self.motion_steps = []
+            if len(self.motion_steps) == 2:
+                a, b = self.motion_steps
+                lengths = math.hypot(*a), math.hypot(*b)
+                agreement = (a[0] * b[0] + a[1] * b[1]) / max(1, lengths[0] * lengths[1])
+                self.motion_velocity = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) if (
+                    min(lengths) > 150 and agreement > 0.7) else None
+            else:
+                self.motion_velocity = None
+            self.last_raw_center, self.last_raw_time = center, now
         self.pending = None
         result = dict(selected)
+        result["raw_box"] = raw_box
         result["box"] = tuple(int(round(v)) for v in self.smooth_box)
-        return result, "tracking weak" if weak_match else "tracking"
+        return result, ("tracking fragment" if fragment_match else
+                        "tracking weak" if weak_match else "tracking")
 
     def _detect_region(self, frame, region, debug):
         x1, y1, x2, y2 = region
@@ -266,6 +321,7 @@ class PlayerDetector:
             self.reset()
             self.shape = (height, width)
         region, wide = self._region(width, height, now)
+        search_retry = False
         candidates, truncated, raw, closed = self._detect_region(frame, region, debug)
         if not wide and not any(
                 c["reason"] in ("accepted", "fragment", "no shoulder shape", "low confidence") and
@@ -280,13 +336,20 @@ class PlayerDetector:
             region = (mx, my, width - mx, height - my)
             candidates, truncated, raw, closed = self._detect_region(frame, region, debug)
             wide = True
+            search_retry = True
             self.last_wide = now
         selected, status = self._select(candidates, now, width, height)
+        credible = [c for c in candidates if c["reason"] == "accepted"]
+        best_candidate = max(credible, key=lambda c: c["confidence"], default=None)
         target = None
         if selected:
             x, y, w, h = selected["box"]
             target = (int(x + w * 0.5), int(y + h * self.config.head_y_fraction))
         return {"best_box": selected["box"] if selected else None,
+                "raw_box": selected["raw_box"] if selected else None,
+                "motion_velocity": self.motion_velocity if selected else None,
+                "best_candidate_box": best_candidate["box"] if best_candidate else None,
+                "search_retry": search_retry,
                 "confidence": selected["confidence"] if selected else 0.0,
                 "target": target, "candidates": candidates, "status": status,
                 "region": region, "wide_search": wide, "truncated": truncated,

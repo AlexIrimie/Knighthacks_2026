@@ -1,6 +1,7 @@
 """Synthetic regression checks; these do not establish real-game accuracy."""
 import csv
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -112,6 +113,36 @@ class DetectionTests(unittest.TestCase):
             result = self.detector.process(blurred, i / 120)
         self.assertIsNone(result["best_box"])
 
+    def test_small_fragment_keeps_previous_box_briefly(self):
+        full = frame_with_players((290, 120, 0.35))
+        previous = self.acquire(full)["best_box"]
+        fragment = np.zeros_like(full)
+        cv2.rectangle(fragment, (293, 129), (301, 144), PURPLE, 1)
+        result = self.detector.process(fragment, 4 / 120)
+        self.assertEqual(result["status"], "tracking fragment")
+        self.assertEqual(result["best_box"][2:], previous[2:])
+        self.assertEqual(result["best_box"][1], previous[1])
+        self.assertLess(result["raw_box"][2], previous[2])
+        for i in range(5, 15):
+            result = self.detector.process(fragment, i / 120)
+        self.assertIsNone(result["best_box"])
+
+    def test_display_prediction_is_capped_and_optional(self):
+        from detection_app import predicted_shift
+        box = (100, 100, 30, 40)
+        self.assertEqual(predicted_shift(None, box, .01), (0, 0))
+        self.assertEqual(predicted_shift((1000, 0), box, .01), (10, 0))
+        self.assertEqual(predicted_shift((10000, 0), box, .01), (30, 0))
+        self.assertEqual(predicted_shift((1000, 0), box, .1), (0, 0))
+
+    def test_motion_velocity_stops_on_direction_change(self):
+        self.acquire(frame_with_players((290, 120, 1)))
+        self.detector.process(frame_with_players((294, 120, 1)), 4 / 120)
+        forward = self.detector.process(frame_with_players((300, 120, 1)), 5 / 120)
+        self.assertGreater(forward["motion_velocity"][0], 0)
+        reversed_frame = self.detector.process(frame_with_players((297, 120, 1)), 6 / 120)
+        self.assertIsNone(reversed_frame["motion_velocity"])
+
     def test_no_stale_target_and_track_expires(self):
         self.acquire(frame_with_players((290, 120, 1)))
         blank = np.zeros((360, 640, 3), np.uint8)
@@ -142,6 +173,8 @@ class DetectionTests(unittest.TestCase):
     def test_small_jitter_filtered_large_motion_responsive(self):
         self.acquire(frame_with_players((290, 120, 1)))
         result = self.detector.process(frame_with_players((294, 120, 1)), 4 / 120)
+        self.assertEqual(result["raw_box"][0], 294)
+        self.assertEqual(result["best_candidate_box"][0], 294)
         self.assertGreater(result["best_box"][0], 290)
         self.assertLess(result["best_box"][0], 294)
         result = self.detector.process(frame_with_players((314, 120, 1)), 5 / 120)
@@ -186,6 +219,10 @@ class DetectionTests(unittest.TestCase):
                 rows = list(csv.DictReader(stream))
             self.assertEqual(len(rows), 5)
             self.assertEqual(rows[-1]["detected"], "1")
+            self.assertEqual(rows[-1]["raw_box_x"], "290")
+            self.assertGreater(float(rows[-1]["published_seconds"]),
+                               float(rows[-1]["time_seconds"]))
+            self.assertIn(rows[-1]["search_retry"], ("0", "1"))
             self.assertTrue(all(float(r["capture_call_ms"]) >= 0 for r in rows))
             self.assertTrue(all(b - a >= 1 / 120 - 0.0001 for a, b in zip(camera.calls, camera.calls[1:])))
             self.assertTrue(camera.released)
@@ -202,12 +239,148 @@ class DetectionTests(unittest.TestCase):
             recorder.close()
             manifest = [json.loads(line) for line in (directory / "frames.jsonl").read_text().splitlines()]
             self.assertEqual(len(manifest), 3)
+            self.assertIn("live_detection", manifest[0])
             output = Path(temp) / "metrics.csv"
             replay(SimpleNamespace(replay=str(directory), debug=True, csv=str(output)))
             with output.open() as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(rows[-1]["detected"], "1")
             self.assertEqual(len(list((directory / "debug").glob("*.png"))), 3)
+
+    def test_lossless_recording_preserves_outline_pixels(self):
+        from detection_app import SampleRecorder
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / "exact"
+            original = frame_with_players((290, 120, .35))
+            recorder = SampleRecorder(directory, 1, 30, image_format="png")
+            recorder.submit(original, 0)
+            recorder.close()
+            saved = cv2.imread(str(directory / "00000.png"))
+            self.assertTrue(np.array_equal(original, saved))
+
+    def test_buffered_capture_returns_latest_without_queue(self):
+        from detection_app import BufferedCapture, stop_event
+
+        class FakeCamera:
+            def __init__(self):
+                self.stopped = False
+                self.index = 0
+
+            def start(self, **kwargs):
+                self.options = kwargs
+
+            def get_latest_frame(self):
+                time.sleep(.003)
+                self.index += 1
+                return self.index
+
+            def stop(self):
+                self.stopped = True
+
+        stop_event.clear()
+        camera = FakeCamera()
+        capture = BufferedCapture(camera)
+        try:
+            first, _, _ = capture.next_frame()
+            time.sleep(.1)
+            latest, _, _ = capture.next_frame()
+            self.assertGreater(latest - first, 2)
+            self.assertFalse(camera.options["video_mode"])
+        finally:
+            stop_event.set()
+            capture.stop()
+            stop_event.clear()
+        self.assertFalse(capture.thread.is_alive())
+
+    def test_buffered_worker_processes_and_stops(self):
+        import detection_app
+        frame = frame_with_players((290, 120, 1))
+
+        class FakeCamera:
+            def __init__(self):
+                self.calls = 0
+                self.released = False
+
+            def start(self, **kwargs):
+                self.options = kwargs
+
+            def get_latest_frame(self):
+                time.sleep(.01)
+                self.calls += 1
+                if self.calls >= 8:
+                    detection_app.stop_event.set()
+                return frame.copy()
+
+            def stop(self):
+                pass
+
+            def release(self):
+                self.released = True
+
+        camera = FakeCamera()
+        detection_app.stop_event.clear()
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "buffered.csv"
+            args = SimpleNamespace(record_seconds=0, debug=False, csv=str(output), no_csv=False,
+                                   capture_mode="buffered", paint_mode="signal", predict_display=False)
+            with patch("dxcam.create", return_value=camera):
+                detection_app.vision_worker(args)
+            with output.open() as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertGreater(len(rows), 0)
+            self.assertEqual(rows[-1]["capture_mode"], "buffered")
+            self.assertTrue(camera.released)
+            self.assertIsNone(detection_app.shared_state["error"])
+        detection_app.stop_event.clear()
+
+    def test_profile_paint_log_joins_frame_metrics(self):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        from PyQt6.QtWidgets import QApplication
+        from detection_app import DetectionOverlay, METRIC_FIELDS, profile_report, shared_state, state_lock
+
+        app = QApplication.instance() or QApplication([])
+        detector = PlayerDetector()
+        frame = frame_with_players((290, 120, 1))
+        for i in range(4):
+            result = detector.process(frame, i / 120)
+        start = time.perf_counter() - 0.1
+        with state_lock:
+            shared_state.update(result)
+            shared_state.update(running=True, frame_number=4, screen_width=640, screen_height=360,
+                                received_at=start + 0.08, capture_attempt_at=start + 0.075,
+                                published_at=start + 0.085, session_start=start,
+                                loop_fps=120.0, vision_ms=1.0)
+        overlay = DetectionOverlay(profile=True)
+        app.processEvents()
+        overlay.grab()
+        self.assertTrue(overlay.paint_samples)
+        with state_lock:
+            shared_state.update(frame_number=5, motion_velocity=(1000.0, 0.0),
+                                capture_attempt_at=time.perf_counter() - .01,
+                                received_at=time.perf_counter() - .006,
+                                published_at=time.perf_counter() - .003)
+        overlay.predict_display = True
+        overlay.frame_ready.emit()
+        app.processEvents()
+        overlay.grab()
+        self.assertTrue(any(sample[0] == 5 and sample[-2] > 0
+                            for sample in overlay.paint_samples))
+        with tempfile.TemporaryDirectory() as temp:
+            metrics = Path(temp) / "run.csv"
+            with metrics.open("w", newline="") as output:
+                writer = csv.DictWriter(output, fieldnames=METRIC_FIELDS)
+                writer.writeheader()
+                writer.writerow({"frame": 4, "time_seconds": .08, "capture_call_ms": 5,
+                                 "vision_processing_ms": 1, "raw_box_x": 290,
+                                 "raw_box_y": 120, "box_x": 290, "box_y": 120,
+                                 "search_retry": 0, "status": "tracking"})
+            paint = overlay.save_profile(metrics)
+            with paint.open(newline="") as stream:
+                paints = list(csv.DictReader(stream))
+            self.assertEqual(paints[0]["frame"], "4")
+            self.assertGreaterEqual(float(paints[0]["publish_to_paint_ms"]), 0)
+            self.assertIn("Frames painted at least once: 1/1", profile_report(metrics, paint))
+        overlay.close()
 
 
 if __name__ == "__main__":
