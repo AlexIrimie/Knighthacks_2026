@@ -22,7 +22,7 @@ Run the separate alignment overlay variant:
 python valorant_alignment_overlay.py
 ```
 
-It displays `ON TARGET` when the detected head point is within 20 pixels of the
+It displays `ON TARGET` when the detected head point is within 8 pixels of the
 screen-center reticle and `NOT ON TARGET` otherwise. Change
 `ALIGNMENT_TOLERANCE_PX` near the top of `valorant_alignment_overlay.py` to tune
 the allowed distance. This is currently visual feedback only; it does not send

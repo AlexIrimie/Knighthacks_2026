@@ -9,9 +9,9 @@ from PyQt6.QtGui import QColor, QFont, QPainter
 import detection_app
 
 
-# The detected head point must be within this many capture pixels of the
-# screen-center reticle to count as aligned.
-ALIGNMENT_TOLERANCE_PX = 20
+# The green head marker has a 5 px radius. Allow only 3 px beyond it so a
+# distant player's torso does not count as a head alignment.
+ALIGNMENT_TOLERANCE_PX = 8
 
 
 def is_reticle_aligned(target, screen_width, screen_height, tolerance_px=ALIGNMENT_TOLERANCE_PX):
