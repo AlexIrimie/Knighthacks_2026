@@ -4,7 +4,7 @@ Purple-outline player detection POC for the practice range. Capture and detectio
 are capped at **120 FPS**; actual throughput depends on processing and capture time.
 
 ```powershell
-pip install dxcam opencv-python numpy PyQt6
+pip install dxcam opencv-python numpy PyQt6 "websockets>=15,<18"
 python valorant_live_overlay_poc.py
 ```
 
@@ -16,17 +16,25 @@ The center reticle and center-to-target line have been removed.
 
 ## Test reticle alignment
 
-Run the separate alignment overlay variant:
+Start `pi_code/led_websocket_server.py` on the Pi first (see
+`pi_code/README.md`), then run the alignment overlay variant on the gaming PC:
 
 ```powershell
 python valorant_alignment_overlay.py
 ```
 
+It connects to `ws://raspberrypi.local:8765` by default. If that hostname does
+not resolve, pass the Pi's IP address:
+
+```powershell
+python valorant_alignment_overlay.py --pi-host 192.168.1.123
+```
+
 It displays `ON TARGET` when the detected head point is within 8 pixels of the
 screen-center reticle and `NOT ON TARGET` otherwise. Change
 `ALIGNMENT_TOLERANCE_PX` near the top of `valorant_alignment_overlay.py` to tune
-the allowed distance. This is currently visual feedback only; it does not send
-anything to the Raspberry Pi.
+the allowed distance. The overlay displays `PI CONNECTED` when LED commands are
+reaching the Pi and `PI OFFLINE` while it reconnects.
 
 ## Inspect detections
 
