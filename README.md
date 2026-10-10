@@ -14,6 +14,20 @@ box, an approximate head point, confidence, detection time, processing FPS and
 time since the frame reached Python. The head point is still a box-based estimate.
 The center reticle and center-to-target line have been removed.
 
+## Test reticle alignment
+
+Run the separate alignment overlay variant:
+
+```powershell
+python valorant_alignment_overlay.py
+```
+
+It displays `ON TARGET` when the detected head point is within 20 pixels of the
+screen-center reticle and `NOT ON TARGET` otherwise. Change
+`ALIGNMENT_TOLERANCE_PX` near the top of `valorant_alignment_overlay.py` to tune
+the allowed distance. This is currently visual feedback only; it does not send
+anything to the Raspberry Pi.
+
 ## Inspect detections
 
 ```powershell
