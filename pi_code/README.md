@@ -120,3 +120,32 @@ Check its status with:
 ```bash
 systemctl status knighthacks-led.service
 ```
+
+## Bench-test the first stepper motor
+
+The first TMC2209 uses these BCM GPIO connections:
+
+```text
+GPIO 17 (physical pin 11) -> STEP
+GPIO 27 (physical pin 13) -> DIR
+GPIO 22 (physical pin 15) -> EN
+```
+
+With MS1 and MS2 disconnected, the TMC2209's internal pull-down resistors select
+1/8 microstepping. Before testing, verify all wiring with power disconnected,
+install the driver heatsink, and connect the motor before applying 12V. Never
+connect or disconnect a motor while the driver is powered.
+
+Stop the LED WebSocket server if it is running, then run:
+
+```bash
+python3 ~/knighthacks/pi_code/test_stepper.py
+```
+
+The default test moves the motor one-quarter revolution at about 5 RPM, pauses,
+returns it to its starting position, and disables the driver. Press Ctrl+C at
+any time to stop and disable it. To request a different small test movement:
+
+```bash
+python3 ~/knighthacks/pi_code/test_stepper.py --revolutions 0.5 --rpm 8
+```
