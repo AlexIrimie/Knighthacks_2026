@@ -14,7 +14,7 @@ DEFAULT_PORT = 8765
 COMMAND_TIMEOUT_SECONDS = 1.0
 
 
-class LedController:
+class LEDController:
     def __init__(self, gpio_pin):
         self.led = LED(gpio_pin)
         self.on_target = False
