@@ -92,7 +92,6 @@ class PiLedClient:
                     open_timeout=2,
                     close_timeout=1,
                     compression=None,
-                    proxy=None,
                 ) as websocket:
                     self._last_error = None
                     self._set_connected(True)
