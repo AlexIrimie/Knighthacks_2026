@@ -1,0 +1,6 @@
+numpy>=1.26
+opencv-python>=4.8,<5
+PyQt6>=6.6,<7
+pynput>=1.7,<2
+websockets>=15,<18
+dxcam>=0.0.5; sys_platform == "win32"

@@ -8,7 +8,13 @@ from pathlib import Path
 import threading
 import time
 
-import cv2
+try:
+    import cv2
+except ImportError:
+    raise SystemExit(
+        "Missing OpenCV. Install dependencies with: "
+        "python -m pip install -r requirements.txt"
+    ) from None
 
 from player_detection import DetectionConfig, PlayerDetector
 

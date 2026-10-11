@@ -4,7 +4,7 @@ Purple-outline player detection POC for the practice range. Capture and detectio
 are capped at **120 FPS**; actual throughput depends on processing and capture time.
 
 ```powershell
-pip install dxcam opencv-python numpy PyQt6 "websockets>=15,<18"
+python -m pip install -r requirements.txt
 python valorant_live_overlay_poc.py
 ```
 
@@ -133,8 +133,8 @@ physical travel. The Pi still enforces its 12-pulse command limit. Tune with
 
 ### Arrow-key manual demo
 
-`arrow_keys.py` provides global Windows keyboard control through the same Pi
-motion server. Hold two arrow keys together for diagonal movement:
+`arrow_keys.py` provides global Windows and macOS keyboard control through the
+same Pi motion server. Hold two arrow keys together for diagonal movement:
 
 ```powershell
 python arrow_keys.py --pi-host 192.168.1.181 --enable-motion
@@ -145,6 +145,9 @@ default mapping describes physical pad movement and therefore uses the opposite
 sign from cursor movement. If an axis is backward, pass `--x-sign 1` or
 `--y-sign 1`; use `--swap-axes` if horizontal and vertical are interchanged.
 Each command remains capped at 12 pulses.
+
+On macOS, allow Terminal, iTerm, or VS Code under **System Settings → Privacy &
+Security → Accessibility** so `pynput` can read held arrow keys globally.
 
 ## Inspect detections
 

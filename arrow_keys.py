@@ -1,8 +1,10 @@
-"""Move the CoreXY mouse pad manually with the Windows arrow keys."""
+"""Move the CoreXY mouse pad manually with global arrow keys."""
 
 import argparse
 import ctypes
 import json
+import sys
+import threading
 import time
 
 try:
@@ -20,22 +22,90 @@ RECONNECT_SECONDS = 1.0
 OPEN_TIMEOUT_SECONDS = 5.0
 REPLY_TIMEOUT_SECONDS = 2.0
 
-VK_ESCAPE = 0x1B
-VK_LEFT = 0x25
-VK_UP = 0x26
-VK_RIGHT = 0x27
-VK_DOWN = 0x28
+WINDOWS_VIRTUAL_KEYS = {
+    "escape": 0x1B,
+    "left": 0x25,
+    "up": 0x26,
+    "right": 0x27,
+    "down": 0x28,
+}
 
 
-def pressed(user32, virtual_key):
-    return bool(user32.GetAsyncKeyState(virtual_key) & 0x8000)
+class WindowsKeyboard:
+    def __init__(self):
+        self.user32 = ctypes.windll.user32
+
+    def is_pressed(self, name):
+        return bool(
+            self.user32.GetAsyncKeyState(WINDOWS_VIRTUAL_KEYS[name]) & 0x8000
+        )
+
+    def close(self):
+        pass
 
 
-def read_direction(user32):
-    horizontal = int(pressed(user32, VK_RIGHT)) - int(
-        pressed(user32, VK_LEFT)
+class ListenerKeyboard:
+    """Global keyboard state via pynput on macOS and other non-Windows hosts."""
+
+    def __init__(self):
+        try:
+            from pynput import keyboard
+        except ImportError as exc:
+            raise RuntimeError(
+                "Missing pynput. Install with: python -m pip install pynput"
+            ) from exc
+
+        self._lock = threading.Lock()
+        self._pressed = set()
+        self._names = {
+            keyboard.Key.esc: "escape",
+            keyboard.Key.left: "left",
+            keyboard.Key.up: "up",
+            keyboard.Key.right: "right",
+            keyboard.Key.down: "down",
+        }
+
+        def on_press(key):
+            name = self._names.get(key)
+            if name is not None:
+                with self._lock:
+                    self._pressed.add(name)
+
+        def on_release(key):
+            name = self._names.get(key)
+            if name is not None:
+                with self._lock:
+                    self._pressed.discard(name)
+
+        self._listener = keyboard.Listener(
+            on_press=on_press,
+            on_release=on_release,
+        )
+        self._listener.start()
+        self._listener.wait()
+
+    def is_pressed(self, name):
+        with self._lock:
+            return name in self._pressed
+
+    def close(self):
+        self._listener.stop()
+        self._listener.join(timeout=1)
+
+
+def create_keyboard():
+    if sys.platform == "win32":
+        return WindowsKeyboard()
+    return ListenerKeyboard()
+
+
+def read_direction(keyboard):
+    horizontal = int(keyboard.is_pressed("right")) - int(
+        keyboard.is_pressed("left")
     )
-    vertical = int(pressed(user32, VK_DOWN)) - int(pressed(user32, VK_UP))
+    vertical = int(keyboard.is_pressed("down")) - int(
+        keyboard.is_pressed("up")
+    )
     return horizontal, vertical
 
 
@@ -133,12 +203,15 @@ def parse_args():
 def main():
     args = parse_args()
     if connect is None:
-        print("Missing dependency. Install it with: pip install 'websockets>=15,<18'")
+        print(
+            "Missing dependency. Install it with: "
+            "python -m pip install 'websockets>=15,<18'"
+        )
         return 1
     try:
-        user32 = ctypes.windll.user32
-    except AttributeError:
-        print("arrow_keys.py requires Windows for global arrow-key input.")
+        keyboard = create_keyboard()
+    except (AttributeError, RuntimeError) as exc:
+        print(exc)
         return 1
 
     uri = f"ws://{args.pi_host}:{args.pi_port}"
@@ -163,11 +236,11 @@ def main():
                     print("Pi motion connected.")
                     while running:
                         cycle_started = time.perf_counter()
-                        if pressed(user32, VK_ESCAPE):
+                        if keyboard.is_pressed("escape"):
                             running = False
                             break
 
-                        horizontal, vertical = read_direction(user32)
+                        horizontal, vertical = read_direction(keyboard)
                         motor_a, motor_b = corexy_command(
                             horizontal,
                             vertical,
@@ -220,6 +293,8 @@ def main():
                 time.sleep(RECONNECT_SECONDS)
     except KeyboardInterrupt:
         print("Stopping arrow-key control.")
+    finally:
+        keyboard.close()
     return 0
 
 
