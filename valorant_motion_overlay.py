@@ -96,6 +96,11 @@ def calculate_motion(target, screen_width, screen_height):
     }
 
 
+def select_aim_target(data, fresh):
+    """Return the head target used by the known-working controller."""
+    return data.get("target") if fresh else None
+
+
 class PiMotionClient:
     """Send only the newest desired correction and wait for the Pi's reply."""
 
@@ -241,7 +246,7 @@ class MotionOverlay(detection_app.DetectionOverlay):
 
         age = time.perf_counter() - data["received_at"]
         fresh = age < detection_app.CONFIG.lost_seconds
-        target = data.get("target") if fresh else None
+        target = select_aim_target(data, fresh)
         command = calculate_motion(
             target,
             data.get("screen_width"),

@@ -91,7 +91,12 @@ Adaptive tuning flags include:
 --far-y-gain 0.055        Vertical gain far from the target
 --full-speed-error 220    Distance in pixels that applies the full far gain
 --accel-pulses 3          Maximum command-strength increase each update
+--aim-body                Stop as soon as the reticle enters the body box
 ```
+
+For the faster body-target demo mode, add `--aim-body` to the same command. If
+the target outlines are hidden, the detector still calculates and uses the body
+box internally.
 
 ## Inspect detections
 

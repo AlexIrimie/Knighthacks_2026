@@ -20,6 +20,35 @@ FULL_SPEED_ERROR_PX = DEFAULT_FULL_SPEED_ERROR_PX
 ACCEL_PULSES = DEFAULT_ACCEL_PULSES
 
 
+def select_body_target(data, fresh):
+    """Return the shortest target point that puts the reticle in the body box."""
+    if not fresh:
+        return None
+    box = data.get("best_box")
+    screen_width = data.get("screen_width")
+    screen_height = data.get("screen_height")
+    if box is None or not screen_width or not screen_height:
+        return None
+
+    x, y, width, height = box
+    inset = motion.ALIGNMENT_TOLERANCE_PX
+    if width > 2 * inset:
+        left, right = x + inset, x + width - inset
+    else:
+        left = right = x + width / 2
+    if height > 2 * inset:
+        top, bottom = y + inset, y + height - inset
+    else:
+        top = bottom = y + height / 2
+
+    reticle_x = screen_width / 2
+    reticle_y = screen_height / 2
+    return (
+        min(max(reticle_x, left), right),
+        min(max(reticle_y, top), bottom),
+    )
+
+
 def _smoothstep(value):
     value = max(0.0, min(1.0, value))
     return value * value * (3.0 - 2.0 * value)
@@ -171,6 +200,11 @@ def main():
         default=DEFAULT_ACCEL_PULSES,
         help="Maximum pulse-count increase per command",
     )
+    parser.add_argument(
+        "--aim-body",
+        action="store_true",
+        help="Stop when the reticle enters the detected body box",
+    )
     args, remaining = parser.parse_known_args()
 
     gains = (
@@ -213,9 +247,11 @@ def main():
     ]
     motion.calculate_motion = calculate_adaptive_motion
     motion.PiMotionClient = AdaptivePiMotionClient
+    if args.aim_body:
+        motion.select_aim_target = select_body_target
 
     print(
-        "Adaptive controller: "
+        f"Adaptive {'body' if args.aim_body else 'head'} controller: "
         f"near=({NEAR_X_GAIN:g}, {NEAR_Y_GAIN:g}), "
         f"far=({FAR_X_GAIN:g}, {FAR_Y_GAIN:g}), "
         f"full speed at {FULL_SPEED_ERROR_PX:g}px, "
