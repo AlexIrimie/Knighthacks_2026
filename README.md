@@ -110,6 +110,23 @@ While the adaptive controller is running, the number-row and numpad hotkeys are:
 The `--aim-body` and `--no-target-outlines` flags still choose the initial modes;
 the hotkeys can change them at any time without restarting the script.
 
+### Prerecorded judging demo
+
+`judging.py` runs the same detector and bounded adaptive motor control against a
+video instead of live desktop capture. Put `juding_video.mp4` beside the script
+(the intentionally supplied spelling is supported), then run:
+
+```powershell
+python judging.py --pi-host 192.168.1.181 --enable-motion --fullscreen
+```
+
+You can instead provide any filename with `--video PATH`. A cyan cross shows the
+simulated aim position. The simulation advances only after the Pi acknowledges a
+motor command, allowing it to converge even though mouse movement cannot alter
+the prerecorded frames. Press `5` for outlines, `6` for head/body mode, and `Q`
+or Escape to stop. Use `--pixels-per-pulse` to calibrate how far one physical
+motor-axis pulse should move the simulated aim; the default is 25 pixels.
+
 ## Inspect detections
 
 ```powershell
