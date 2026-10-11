@@ -120,14 +120,16 @@ video instead of live desktop capture. Put `juding_video.mp4` beside the script
 python judging.py --pi-host 192.168.1.181 --enable-motion --fullscreen
 ```
 
-You can instead provide any filename with `--video PATH`. A cyan cross shows the
-simulated aim position. The simulation advances only after the Pi acknowledges a
-motor command, allowing it to converge even though mouse movement cannot alter
-the prerecorded frames. Press `5` for outlines, `6` for head/body mode, and `Q`
-or Escape to stop. Use `--pixels-per-pulse` to calibrate how far one physical
-motor-axis pulse should move the simulated aim. The judging default is 12 pixels,
-which deliberately produces larger, easier-to-see physical movements while the
-Pi still enforces its 12-pulse command limit.
+You can instead provide any filename with `--video PATH`. The script keeps its
+simulated aim position invisible by default; add `--show-simulated-reticle` to
+display it. The simulation advances only after the Pi acknowledges a motor
+command, allowing it to converge even though mouse movement cannot alter the
+prerecorded frames. Press `5` for outlines, `6` for head/body mode, and `Q` or
+Escape to stop. Judging mode uses relaxed purple thresholds, holds a detection
+through up to 0.2 seconds of compression flicker, doubles each requested
+correction, and models only 5 pixels per pulse for deliberately exaggerated
+physical travel. The Pi still enforces its 12-pulse command limit. Tune with
+`--demo-motion-scale`, `--pixels-per-pulse`, and `--target-hold` if needed.
 
 ## Inspect detections
 

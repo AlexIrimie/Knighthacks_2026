@@ -26,8 +26,10 @@ DEFAULT_FULL_SPEED_ERROR = 220.0
 DEFAULT_MAX_MOTOR_PULSES = 12
 DEFAULT_ACCEL_PULSES = 3
 DEFAULT_COMMAND_HZ = 10.0
-DEFAULT_PIXELS_PER_PULSE = 12.0
+DEFAULT_PIXELS_PER_PULSE = 5.0
+DEFAULT_DEMO_MOTION_SCALE = 2.0
 DEFAULT_BODY_SIDE_INSET = 0.10
+DEFAULT_TARGET_HOLD_SECONDS = 0.20
 ALIGNMENT_TOLERANCE_PX = 8
 RECONNECT_SECONDS = 1.0
 OPEN_TIMEOUT_SECONDS = 5.0
@@ -139,6 +141,8 @@ def calculate_motion(target, reticle, args):
     control_x, control_y = (dy, dx) if args.swap_axes else (dx, dy)
     x_pulses = quantize_axis(control_x, x_gain, args.x_sign)
     y_pulses = quantize_axis(control_y, y_gain, args.y_sign)
+    x_pulses = int(round(x_pulses * args.demo_motion_scale))
+    y_pulses = int(round(y_pulses * args.demo_motion_scale))
 
     motor_a = x_pulses + y_pulses
     motor_b = x_pulses - y_pulses
@@ -369,22 +373,32 @@ def apply_acknowledged_motion(reticle, command, args, frame_size):
     ]
 
 
-def draw_demo_frame(frame, result, reticle, command, body_mode, outlines, client):
+def draw_demo_frame(
+    frame,
+    result,
+    reticle,
+    command,
+    body_mode,
+    outlines,
+    show_simulated_reticle,
+    client,
+):
     if outlines and result.get("best_box") is not None:
         x, y, width, height = result["best_box"]
         cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 0, 255), 2)
         if result.get("target") is not None:
             cv2.circle(frame, result["target"], 6, (0, 255, 0), 2)
 
-    reticle_point = (int(round(reticle[0])), int(round(reticle[1])))
-    cv2.drawMarker(
-        frame,
-        reticle_point,
-        (255, 255, 0),
-        cv2.MARKER_CROSS,
-        22,
-        2,
-    )
+    if show_simulated_reticle:
+        reticle_point = (int(round(reticle[0])), int(round(reticle[1])))
+        cv2.drawMarker(
+            frame,
+            reticle_point,
+            (255, 255, 0),
+            cv2.MARKER_CROSS,
+            22,
+            2,
+        )
 
     if not client.motion_enabled:
         status = "MOTION DISARMED"
@@ -431,6 +445,7 @@ def parse_args():
     parser.add_argument("--enable-motion", action="store_true")
     parser.add_argument("--aim-body", action="store_true")
     parser.add_argument("--no-target-outlines", action="store_true")
+    parser.add_argument("--show-simulated-reticle", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--fullscreen", action="store_true")
     parser.add_argument("--x-sign", type=int, choices=(-1, 1), default=1)
@@ -463,6 +478,18 @@ def parse_args():
         help="Simulated screen movement from one motor-axis pulse",
     )
     parser.add_argument(
+        "--demo-motion-scale",
+        type=float,
+        default=DEFAULT_DEMO_MOTION_SCALE,
+        help="Scale each judging correction before the 12-pulse safety cap",
+    )
+    parser.add_argument(
+        "--target-hold",
+        type=float,
+        default=DEFAULT_TARGET_HOLD_SECONDS,
+        help="Seconds to hold the last video detection through compression flicker",
+    )
+    parser.add_argument(
         "--body-side-inset",
         type=float,
         default=DEFAULT_BODY_SIDE_INSET,
@@ -493,6 +520,10 @@ def parse_args():
         parser.error("--command-hz must be between 1 and 20")
     if args.pixels_per_pulse <= 0:
         parser.error("--pixels-per-pulse must be greater than zero")
+    if args.demo_motion_scale <= 0:
+        parser.error("--demo-motion-scale must be greater than zero")
+    if not 0 <= args.target_hold <= 0.5:
+        parser.error("--target-hold must be between 0 and 0.5 seconds")
     if not 0 <= args.body_side_inset < 0.5:
         parser.error("--body-side-inset must be at least 0 and less than 0.5")
     return args
@@ -534,12 +565,23 @@ def main():
             client.close()
             capture.release()
             return 1
-    detector = PlayerDetector(DetectionConfig())
+    detector = PlayerDetector(
+        DetectionConfig(
+            lower_purple=(120, 45, 55),
+            upper_purple=(172, 255, 255),
+            min_confidence=0.56,
+            lost_seconds=0.20,
+            confirm_seconds=0.01,
+            smooth_seconds=0.02,
+        )
+    )
     body_mode = args.aim_body
     outlines = not args.no_target_outlines
     reticle = None
     last_acknowledged_sequence = 0
     frame_number = 0
+    last_valid_result = None
+    last_valid_time = -math.inf
     playback_started = time.perf_counter()
     window_name = "KnightHacks Judging Demo"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -563,6 +605,8 @@ def main():
                 capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 detector.reset()
                 frame_number = 0
+                last_valid_result = None
+                last_valid_time = -math.inf
                 playback_started = time.perf_counter()
                 continue
 
@@ -582,6 +626,18 @@ def main():
                 last_acknowledged_sequence = acknowledged["sequence"]
             video_time = frame_number / fps
             result = detector.process(frame, video_time)
+            if result.get("best_box") is not None:
+                last_valid_result = result
+                last_valid_time = video_time
+            elif (
+                last_valid_result is not None
+                and video_time - last_valid_time <= args.target_hold
+            ):
+                held = dict(result)
+                held["best_box"] = last_valid_result["best_box"]
+                held["target"] = last_valid_result["target"]
+                held["status"] = "holding compressed-video detection"
+                result = held
             target = (
                 select_body_target(result, reticle, args.body_side_inset)
                 if body_mode
@@ -598,6 +654,7 @@ def main():
                 command,
                 body_mode,
                 outlines,
+                args.show_simulated_reticle,
                 client,
             )
             cv2.imshow(window_name, display)
