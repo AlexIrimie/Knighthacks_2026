@@ -11,6 +11,7 @@ DEFAULT_NEAR_GAIN = 0.018
 DEFAULT_FAR_GAIN = 0.055
 DEFAULT_FULL_SPEED_ERROR_PX = 220.0
 DEFAULT_ACCEL_PULSES = 3
+DEFAULT_BODY_SIDE_INSET = 0.10
 
 NEAR_X_GAIN = DEFAULT_NEAR_GAIN
 NEAR_Y_GAIN = DEFAULT_NEAR_GAIN
@@ -18,6 +19,7 @@ FAR_X_GAIN = DEFAULT_FAR_GAIN
 FAR_Y_GAIN = DEFAULT_FAR_GAIN
 FULL_SPEED_ERROR_PX = DEFAULT_FULL_SPEED_ERROR_PX
 ACCEL_PULSES = DEFAULT_ACCEL_PULSES
+BODY_SIDE_INSET = DEFAULT_BODY_SIDE_INSET
 
 
 def select_body_target(data, fresh):
@@ -31,13 +33,16 @@ def select_body_target(data, fresh):
         return None
 
     x, y, width, height = box
-    inset = motion.ALIGNMENT_TOLERANCE_PX
-    if width > 2 * inset:
-        left, right = x + inset, x + width - inset
+    horizontal_inset = (
+        motion.ALIGNMENT_TOLERANCE_PX + width * BODY_SIDE_INSET
+    )
+    vertical_inset = motion.ALIGNMENT_TOLERANCE_PX
+    if width > 2 * horizontal_inset:
+        left, right = x + horizontal_inset, x + width - horizontal_inset
     else:
         left = right = x + width / 2
-    if height > 2 * inset:
-        top, bottom = y + inset, y + height - inset
+    if height > 2 * vertical_inset:
+        top, bottom = y + vertical_inset, y + height - vertical_inset
     else:
         top = bottom = y + height / 2
 
@@ -181,7 +186,7 @@ class AdaptivePiMotionClient(BasePiMotionClient):
 
 def main():
     global NEAR_X_GAIN, NEAR_Y_GAIN, FAR_X_GAIN, FAR_Y_GAIN
-    global FULL_SPEED_ERROR_PX, ACCEL_PULSES
+    global FULL_SPEED_ERROR_PX, ACCEL_PULSES, BODY_SIDE_INSET
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--near-x-gain", type=float, default=DEFAULT_NEAR_GAIN)
@@ -205,6 +210,12 @@ def main():
         action="store_true",
         help="Stop when the reticle enters the detected body box",
     )
+    parser.add_argument(
+        "--body-side-inset",
+        type=float,
+        default=DEFAULT_BODY_SIDE_INSET,
+        help="Fraction trimmed from each side of the body box (default 0.10)",
+    )
     args, remaining = parser.parse_known_args()
 
     gains = (
@@ -227,6 +238,8 @@ def main():
             f"--accel-pulses must be between 1 and "
             f"{motion.DEFAULT_MAX_MOTOR_PULSES}"
         )
+    if not 0 <= args.body_side_inset < 0.5:
+        parser.error("--body-side-inset must be at least 0 and less than 0.5")
 
     NEAR_X_GAIN = args.near_x_gain
     NEAR_Y_GAIN = args.near_y_gain
@@ -234,6 +247,7 @@ def main():
     FAR_Y_GAIN = args.far_y_gain
     FULL_SPEED_ERROR_PX = args.full_speed_error
     ACCEL_PULSES = args.accel_pulses
+    BODY_SIDE_INSET = args.body_side_inset
 
     # Remove the adaptive-only flags, then let the proven controller parse all
     # existing networking, direction, safety, and overlay options.
@@ -255,7 +269,8 @@ def main():
         f"near=({NEAR_X_GAIN:g}, {NEAR_Y_GAIN:g}), "
         f"far=({FAR_X_GAIN:g}, {FAR_Y_GAIN:g}), "
         f"full speed at {FULL_SPEED_ERROR_PX:g}px, "
-        f"acceleration={ACCEL_PULSES} pulses/command."
+        f"acceleration={ACCEL_PULSES} pulses/command, "
+        f"body side inset={BODY_SIDE_INSET:.0%}."
     )
     return motion.main()
 

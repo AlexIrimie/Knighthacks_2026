@@ -92,11 +92,13 @@ Adaptive tuning flags include:
 --full-speed-error 220    Distance in pixels that applies the full far gain
 --accel-pulses 3          Maximum command-strength increase each update
 --aim-body                Stop as soon as the reticle enters the body box
+--body-side-inset 0.10    Trim 10% from the left and right body boundaries
 ```
 
 For the faster body-target demo mode, add `--aim-body` to the same command. If
 the target outlines are hidden, the detector still calculates and uses the body
-box internally.
+box internally. Body mode ignores the outer 10% on both sides by default so a
+slightly oversized detection box does not cause a near miss.
 
 ## Inspect detections
 
