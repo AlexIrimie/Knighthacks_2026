@@ -125,7 +125,9 @@ simulated aim position. The simulation advances only after the Pi acknowledges a
 motor command, allowing it to converge even though mouse movement cannot alter
 the prerecorded frames. Press `5` for outlines, `6` for head/body mode, and `Q`
 or Escape to stop. Use `--pixels-per-pulse` to calibrate how far one physical
-motor-axis pulse should move the simulated aim; the default is 25 pixels.
+motor-axis pulse should move the simulated aim. The judging default is 12 pixels,
+which deliberately produces larger, easier-to-see physical movements while the
+Pi still enforces its 12-pulse command limit.
 
 ## Inspect detections
 
