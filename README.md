@@ -71,6 +71,28 @@ attempting one large open-loop jump. Calibration flags include:
 The Pi independently rejects commands above 12 pulses and disables both motor
 drivers if commands stop for 0.3 seconds or the connection closes.
 
+### Experimental adaptive motion
+
+`valorant_adaptive_motion_overlay.py` leaves the known-working controller
+unchanged and adds distance-based gain plus a gradual correction ramp. It uses
+small gains close to the target, smoothly increases them as the error grows,
+and stops immediately when the target is reached or lost:
+
+```powershell
+python valorant_adaptive_motion_overlay.py --pi-host 192.168.1.181 --enable-motion --x-sign 1 --y-sign 1 --no-target-outlines
+```
+
+Adaptive tuning flags include:
+
+```text
+--near-x-gain 0.018       Horizontal gain close to the target
+--near-y-gain 0.018       Vertical gain close to the target
+--far-x-gain 0.055        Horizontal gain far from the target
+--far-y-gain 0.055        Vertical gain far from the target
+--full-speed-error 220    Distance in pixels that applies the full far gain
+--accel-pulses 3          Maximum command-strength increase each update
+```
+
 ## Inspect detections
 
 ```powershell
