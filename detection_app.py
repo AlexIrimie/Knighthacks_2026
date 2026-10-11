@@ -373,11 +373,18 @@ def exclude_from_capture(widget):
 class DetectionOverlay(QWidget):
     frame_ready = pyqtSignal()
 
-    def __init__(self, profile=False, paint_mode="signal", predict_display=False):
+    def __init__(
+        self,
+        profile=False,
+        paint_mode="signal",
+        predict_display=False,
+        draw_target_outlines=True,
+    ):
         super().__init__()
         self.profile = profile
         self.paint_mode = paint_mode
         self.predict_display = predict_display
+        self.draw_target_outlines = draw_target_outlines
         self.paint_samples = []
         self.last_sampled_frame = None
         self.setWindowTitle("Player detection overlay")
@@ -428,7 +435,7 @@ class DetectionOverlay(QWidget):
                     x, y, w, h = box
                     painter.setPen(QPen(color, line_width))
                     painter.drawRect(QRectF(x * sx, y * sy, w * sx, h * sy))
-        if data["best_box"] is not None and fresh:
+        if self.draw_target_outlines and data["best_box"] is not None and fresh:
             x, y, w, h = data["best_box"]
             if self.profile and self.predict_display:
                 painter.setPen(QPen(QColor(255, 40, 40), 2))

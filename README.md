@@ -65,6 +65,7 @@ attempting one large open-loop jump. Calibration flags include:
 --swap-axes             Swap the physical X/Y mapping
 --max-motor-pulses 6    Lower the per-correction safety cap
 --command-hz 5          Send corrections less frequently
+--no-target-outlines    Hide the red body box and green head circle
 ```
 
 The Pi independently rejects commands above 12 pulses and disables both motor

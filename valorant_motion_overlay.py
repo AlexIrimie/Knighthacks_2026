@@ -35,6 +35,7 @@ Y_SIGN = -1
 SWAP_AXES = False
 MAX_MOTOR_PULSES = DEFAULT_MAX_MOTOR_PULSES
 COMMAND_HZ = DEFAULT_COMMAND_HZ
+DRAW_TARGET_OUTLINES = True
 
 
 def _quantize_axis(error_px, gain, direction_sign):
@@ -224,6 +225,7 @@ class MotionOverlay(detection_app.DetectionOverlay):
     def __init__(self, *args, **kwargs):
         self.motion_client = PiMotionClient(PI_URI, MOTION_ENABLED, COMMAND_HZ)
         self.last_command = calculate_motion(None, 0, 0)
+        kwargs["draw_target_outlines"] = DRAW_TARGET_OUTLINES
         super().__init__(*args, **kwargs)
         detection_app.QApplication.instance().aboutToQuit.connect(
             self.motion_client.close
@@ -288,7 +290,7 @@ class MotionOverlay(detection_app.DetectionOverlay):
 
 def main():
     global PI_URI, MOTION_ENABLED, X_GAIN, Y_GAIN, X_SIGN, Y_SIGN
-    global SWAP_AXES, MAX_MOTOR_PULSES, COMMAND_HZ
+    global SWAP_AXES, MAX_MOTOR_PULSES, COMMAND_HZ, DRAW_TARGET_OUTLINES
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--pi-host", default=DEFAULT_PI_HOST)
@@ -313,6 +315,11 @@ def main():
         default=DEFAULT_MAX_MOTOR_PULSES,
     )
     parser.add_argument("--command-hz", type=float, default=DEFAULT_COMMAND_HZ)
+    parser.add_argument(
+        "--no-target-outlines",
+        action="store_true",
+        help="Hide the red body box and green head circle",
+    )
     args, remaining = parser.parse_known_args()
 
     if not 1 <= args.pi_port <= 65535:
@@ -336,6 +343,7 @@ def main():
     SWAP_AXES = args.swap_axes
     MAX_MOTOR_PULSES = args.max_motor_pulses
     COMMAND_HZ = args.command_hz
+    DRAW_TARGET_OUTLINES = not args.no_target_outlines
     sys.argv = [sys.argv[0], *remaining]
 
     print(
