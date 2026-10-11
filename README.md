@@ -131,6 +131,21 @@ correction, and models only 5 pixels per pulse for deliberately exaggerated
 physical travel. The Pi still enforces its 12-pulse command limit. Tune with
 `--demo-motion-scale`, `--pixels-per-pulse`, and `--target-hold` if needed.
 
+### Arrow-key manual demo
+
+`arrow_keys.py` provides global Windows keyboard control through the same Pi
+motion server. Hold two arrow keys together for diagonal movement:
+
+```powershell
+python arrow_keys.py --pi-host 192.168.1.181 --enable-motion
+```
+
+Release the keys to disable both motors, and press Escape or Ctrl+C to quit. The
+default mapping describes physical pad movement and therefore uses the opposite
+sign from cursor movement. If an axis is backward, pass `--x-sign 1` or
+`--y-sign 1`; use `--swap-axes` if horizontal and vertical are interchanged.
+Each command remains capped at 12 pulses.
+
 ## Inspect detections
 
 ```powershell
