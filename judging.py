@@ -26,10 +26,12 @@ DEFAULT_FULL_SPEED_ERROR = 220.0
 DEFAULT_MAX_MOTOR_PULSES = 12
 DEFAULT_ACCEL_PULSES = 3
 DEFAULT_COMMAND_HZ = 10.0
-DEFAULT_PIXELS_PER_PULSE = 25.0
+DEFAULT_PIXELS_PER_PULSE = 12.0
 DEFAULT_BODY_SIDE_INSET = 0.10
 ALIGNMENT_TOLERANCE_PX = 8
 RECONNECT_SECONDS = 1.0
+OPEN_TIMEOUT_SECONDS = 5.0
+REPLY_TIMEOUT_SECONDS = 2.0
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
 
 
@@ -293,7 +295,7 @@ class JudgingMotionClient:
             try:
                 with connect(
                     self.uri,
-                    open_timeout=2,
+                    open_timeout=OPEN_TIMEOUT_SECONDS,
                     close_timeout=1,
                     compression=None,
                 ) as websocket:
@@ -305,7 +307,9 @@ class JudgingMotionClient:
                             stopping = self._stopping
                         message = self._message(desired, stopping)
                         websocket.send(json.dumps(message))
-                        reply = json.loads(websocket.recv(timeout=0.5))
+                        reply = json.loads(
+                            websocket.recv(timeout=REPLY_TIMEOUT_SECONDS)
+                        )
                         if not reply.get("ok"):
                             raise RuntimeError(
                                 reply.get("error", "Pi rejected command")
@@ -326,9 +330,15 @@ class JudgingMotionClient:
                                     timeout=remaining,
                                 )
             except Exception as exc:
+                hint = ""
+                if isinstance(exc, TimeoutError):
+                    hint = (
+                        " Confirm aim_motion_websocket_server.py—not the "
+                        "LED-only server—is running on the Pi."
+                    )
                 print(
                     f"Pi motion unavailable ({type(exc).__name__}: {exc}); "
-                    f"retrying in {RECONNECT_SECONDS:g}s."
+                    f"retrying in {RECONNECT_SECONDS:g}s.{hint}"
                 )
                 self._set_connected(False)
                 self._reset_acceleration()
@@ -516,11 +526,11 @@ def main():
         args.accel_pulses,
     )
     if args.enable_motion:
-        deadline = time.perf_counter() + 5
+        deadline = time.perf_counter() + 8
         while not client.connected and time.perf_counter() < deadline:
             time.sleep(0.05)
         if not client.connected:
-            print("Could not connect to the Pi within 5 seconds; demo not started.")
+            print("Could not connect to the Pi within 8 seconds; demo not started.")
             client.close()
             capture.release()
             return 1
