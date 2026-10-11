@@ -100,6 +100,16 @@ the target outlines are hidden, the detector still calculates and uses the body
 box internally. Body mode ignores the outer 10% on both sides by default so a
 slightly oversized detection box does not cause a near miss.
 
+While the adaptive controller is running, the number-row and numpad hotkeys are:
+
+```text
+5    Toggle the red body box and green head marker
+6    Toggle live between head and body targeting
+```
+
+The `--aim-body` and `--no-target-outlines` flags still choose the initial modes;
+the hotkeys can change them at any time without restarting the script.
+
 ## Inspect detections
 
 ```powershell

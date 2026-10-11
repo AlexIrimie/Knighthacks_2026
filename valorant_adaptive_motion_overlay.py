@@ -1,6 +1,7 @@
 """Experimental adaptive CoreXY aim controller with command acceleration."""
 
 import argparse
+import ctypes
 import math
 import sys
 
@@ -20,6 +21,14 @@ FAR_Y_GAIN = DEFAULT_FAR_GAIN
 FULL_SPEED_ERROR_PX = DEFAULT_FULL_SPEED_ERROR_PX
 ACCEL_PULSES = DEFAULT_ACCEL_PULSES
 BODY_SIDE_INSET = DEFAULT_BODY_SIDE_INSET
+AIM_BODY = False
+
+
+def select_runtime_target(data, fresh):
+    """Select the head or body target using the current hotkey mode."""
+    if AIM_BODY:
+        return select_body_target(data, fresh)
+    return data.get("target") if fresh else None
 
 
 def select_body_target(data, fresh):
@@ -184,9 +193,73 @@ class AdaptivePiMotionClient(BasePiMotionClient):
         return message
 
 
+BaseMotionOverlay = motion.MotionOverlay
+
+
+class AdaptiveMotionOverlay(BaseMotionOverlay):
+    """Add global Windows hotkeys for outlines and head/body aim mode."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._hotkey_down = {"outlines": False, "aim": False}
+        self._user32 = None
+        try:
+            self._user32 = ctypes.windll.user32
+        except AttributeError:
+            print("Adaptive hotkeys unavailable: Windows input API not found.")
+            return
+
+        self._hotkey_timer = motion.detection_app.QTimer(self)
+        self._hotkey_timer.timeout.connect(self._poll_hotkeys)
+        self._hotkey_timer.start(30)
+        print("Hotkeys: [5] toggle target outlines; [6] toggle head/body aim.")
+
+    def _pressed(self, *virtual_keys):
+        return any(
+            self._user32.GetAsyncKeyState(key) & 0x8000
+            for key in virtual_keys
+        )
+
+    def _poll_hotkeys(self):
+        global AIM_BODY
+
+        # Support both the number row and numeric keypad.
+        states = {
+            "outlines": self._pressed(0x35, 0x65),
+            "aim": self._pressed(0x36, 0x66),
+        }
+        for name, pressed in states.items():
+            if pressed and not self._hotkey_down[name]:
+                if name == "outlines":
+                    self.draw_target_outlines = not self.draw_target_outlines
+                    state = "ON" if self.draw_target_outlines else "OFF"
+                    print(f"Target outlines: {state}")
+                else:
+                    AIM_BODY = not AIM_BODY
+                    print(f"Aim mode: {'BODY' if AIM_BODY else 'HEAD'}")
+                self.update()
+            self._hotkey_down[name] = pressed
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+
+        painter = motion.QPainter(self)
+        painter.setFont(motion.QFont("Consolas", 9, motion.QFont.Weight.Bold))
+        box = motion.QRectF((self.width() - 390) / 2, 96, 390, 22)
+        painter.fillRect(box, motion.QColor(15, 15, 15, 190))
+        painter.setPen(motion.QColor(255, 255, 255))
+        painter.drawText(
+            box,
+            motion.Qt.AlignmentFlag.AlignCenter,
+            f"[5] OUTLINES {'ON' if self.draw_target_outlines else 'OFF'}    "
+            f"[6] AIM {'BODY' if AIM_BODY else 'HEAD'}",
+        )
+        painter.end()
+
+
 def main():
     global NEAR_X_GAIN, NEAR_Y_GAIN, FAR_X_GAIN, FAR_Y_GAIN
-    global FULL_SPEED_ERROR_PX, ACCEL_PULSES, BODY_SIDE_INSET
+    global FULL_SPEED_ERROR_PX, ACCEL_PULSES, BODY_SIDE_INSET, AIM_BODY
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--near-x-gain", type=float, default=DEFAULT_NEAR_GAIN)
@@ -248,6 +321,7 @@ def main():
     FULL_SPEED_ERROR_PX = args.full_speed_error
     ACCEL_PULSES = args.accel_pulses
     BODY_SIDE_INSET = args.body_side_inset
+    AIM_BODY = args.aim_body
 
     # Remove the adaptive-only flags, then let the proven controller parse all
     # existing networking, direction, safety, and overlay options.
@@ -261,11 +335,11 @@ def main():
     ]
     motion.calculate_motion = calculate_adaptive_motion
     motion.PiMotionClient = AdaptivePiMotionClient
-    if args.aim_body:
-        motion.select_aim_target = select_body_target
+    motion.MotionOverlay = AdaptiveMotionOverlay
+    motion.select_aim_target = select_runtime_target
 
     print(
-        f"Adaptive {'body' if args.aim_body else 'head'} controller: "
+        f"Adaptive {'body' if AIM_BODY else 'head'} controller: "
         f"near=({NEAR_X_GAIN:g}, {NEAR_Y_GAIN:g}), "
         f"far=({FAR_X_GAIN:g}, {FAR_Y_GAIN:g}), "
         f"full speed at {FULL_SPEED_ERROR_PX:g}px, "
