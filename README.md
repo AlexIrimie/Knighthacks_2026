@@ -36,6 +36,40 @@ screen-center reticle and `NOT ON TARGET` otherwise. Change
 the allowed distance. The overlay displays `PI CONNECTED` when LED commands are
 reaching the Pi and `PI OFFLINE` while it reconnects.
 
+## Send bounded CoreXY aim corrections
+
+Start `pi_code/aim_motion_websocket_server.py` on the Pi, then preview the new
+controller on the gaming PC with motion disarmed:
+
+```powershell
+python valorant_motion_overlay.py --pi-host knighthacks2026.local
+```
+
+Add `--enable-motion` only after confirming the overlay reports sensible pixel
+errors and tiny motor commands:
+
+```powershell
+python valorant_motion_overlay.py --pi-host knighthacks2026.local --enable-motion
+```
+
+The default controller converts each screen-axis pixel error to 0.04 CoreXY
+pulses, sends at most 12 pulses to either motor per correction, and limits
+corrections to 10 Hz. It continuously re-detects after each tiny move instead of
+attempting one large open-loop jump. Calibration flags include:
+
+```text
+--x-gain 0.02           Smaller horizontal corrections
+--y-gain 0.02           Smaller vertical corrections
+--x-sign 1              Reverse horizontal correction direction
+--y-sign 1              Reverse vertical correction direction
+--swap-axes             Swap the physical X/Y mapping
+--max-motor-pulses 6    Lower the per-correction safety cap
+--command-hz 5          Send corrections less frequently
+```
+
+The Pi independently rejects commands above 12 pulses and disables both motor
+drivers if commands stop for 0.3 seconds or the connection closes.
+
 ## Inspect detections
 
 ```powershell

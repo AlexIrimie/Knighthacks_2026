@@ -80,6 +80,33 @@ hostname -I
 Then run `python valorant_alignment_overlay.py --pi-host PI_ADDRESS` on the PC.
 The overlay should display `PI CONNECTED` once the connection succeeds.
 
+## Start the combined LED and CoreXY server
+
+Stop the older LED-only server before using the combined server because both
+default to port 8765 and GPIO 2:
+
+```bash
+sudo systemctl disable --now knighthacks-led.service
+```
+
+Start the combined server from the repository layout:
+
+```bash
+~/pi_code/.venv/bin/python ~/pi_code/aim_motion_websocket_server.py
+```
+
+For the flat `/home/andrewi/knighthacks` layout used on the current Pi:
+
+```bash
+cd ~/knighthacks
+.venv/bin/python aim_motion_websocket_server.py
+```
+
+It drives motor A with STEP/DIR/EN GPIO 17/27/22 and motor B with GPIO
+23/24/25. Defaults are 100 motor RPM, at most 12 pulses per received correction,
+and a 0.3-second fail-safe timeout. Optional server flags are `--rpm`,
+`--max-pulses`, `--host`, `--port`, and `--led-gpio`.
+
 ## Start the WebSocket server automatically when the Pi boots
 
 Create a system service:
@@ -149,3 +176,48 @@ any time to stop and disable it. To request a different small test movement:
 ```bash
 python3 ~/knighthacks/pi_code/test_stepper.py --revolutions 0.5 --rpm 8
 ```
+
+## Bench-test both stepper motors
+
+The second TMC2209 uses GPIO 23 for STEP, GPIO 24 for DIR, and GPIO 25
+for its active-low EN input. Test both drivers together at approximately
+100 RPM with:
+
+```bash
+python3 ~/knighthacks/pi_code/test_two_steppers.py
+```
+
+The two motors receive synchronized pulses, move one-quarter revolution,
+pause, return, and are then disabled. Different small test values can be passed
+with `--revolutions` and `--rpm`.
+
+To disable the original single-motor boot test without deleting its script:
+
+```bash
+sudo systemctl disable --now knighthacks-motor-test.service
+```
+
+## Brief CoreXY opposite-direction test
+
+Run motor A and motor B in opposite logical directions at approximately 10 RPM
+for one second, without reversing afterward:
+
+```bash
+python3 ~/knighthacks/pi_code/test_corexy_opposite.py
+```
+
+The script disables both drivers immediately after the one-way movement. The
+speed and duration can be changed with `--rpm` and `--duration`.
+
+## Small CoreXY X-pattern test
+
+Trace both diagonals of a small X relative to the mechanism's current position,
+then return to the starting position:
+
+```bash
+python3 ~/knighthacks/pi_code/test_corexy_x_pattern.py
+```
+
+The default uses 200 motor pulses from the center to each corner at about
+10 RPM. Keep the mechanism near the center because this test does not home the
+axes or detect the frame edges.
